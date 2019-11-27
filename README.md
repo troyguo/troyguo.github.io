@@ -1,4 +1,6 @@
 # troyguo's blog  
+Mail: hit_troy@126.com
+
 I will cover the following topics:
 *******
 ## ASIC Design & Verification
