@@ -4,7 +4,7 @@
 
 
 
-## start() vs uvm_do
+## 1. start() vs uvm_do
 
 start() task的声明：
 
@@ -36,6 +36,3 @@ start() task的声明：
 
 Notice the default parameter of **call_pre_post**, the default value of start() is 1, while the default 
 
-
-
-## 

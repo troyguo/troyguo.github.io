@@ -1,6 +1,6 @@
 # Site settings 配置站点
 title: 'Troyguo Blog'
-description: 'troyguo的博客，热衷于芯片验证及Linux内核/驱动开发。很高兴能在这里与你分享我对技术和生活的思考。
+description: '特洛伊的博客，热衷于芯片验证及Linux内核/驱动开发。
               Mail: hit_troy@126.com'
 keyword: 'troyguo，UVM，Systemverilog，Emulation， Formal Verification， Linux kernel， Linux device driver'
 url: 'https://troyguo.github.io' # your host
@@ -29,6 +29,8 @@ author: 'troyguo'
 nickname: '特洛伊'
 bio: '热衷于芯片验证及Linux内核/驱动开发'
 avatar: '/assets/img/profile.jpg'
+
+gems: [jekyll-paginate]
 
 # Search
 search: true
