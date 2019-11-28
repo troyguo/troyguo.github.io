@@ -1,90 +1,72 @@
-# Site settings 配置站点
-title: 'Troyguo Blog'
-description: '特洛伊的博客，热衷于芯片验证及Linux内核/驱动开发。
-              Mail: hit_troy@126.com'
-keyword: 'troyguo，UVM，Systemverilog，Emulation， Formal Verification， Linux kernel， Linux device driver'
-url: 'https://troyguo.github.io' # your host
+#Site
+title: Troyguo Verification
+description: The Blog for Troyguo Verification
+logo: favicon.png
+url: troyguo.me
+rss_url: /feed.xml
 
-# when build blog on server, if you don't need baseurl, you should leave this value blank.
-# 在服务器上建站时，如果你不需要子域名，请将这一格留空
-# if you're using GitHub Pages, set baseurl to your blog's .
-# 如果你在使用 GitHub Pages, 请将 baseurl 设置为你的网址的子域名
-# for example, if your site is "kaeyleo.github.io", then this url should leave blank.
-# 例如，当你的域名是 "kaeyleo.github.io"  时，这个 url 需要留空
-# but if your created a repo named "myblog", and the site is "kaeyleo.github.io/myblog", change baseurl to '/myblog'
-# 但是，如果你创建了一个叫 "myblog" 的网站，此时网址会变成 "kaeyleo.github.io/myblog" ，这时再将 baseurl 设置为 '/myblog'
-baseurl: ''
-
-# Navigation links
-nav:
-  home: '/'
-  tags: '/tags.html'
-
-# Footer
-footer:
-  since: 2017
-
-# Author 配置博主信息
-author: 'troyguo'
-nickname: '特洛伊'
-bio: '热衷于芯片验证及Linux内核/驱动开发'
-avatar: '/assets/img/profile.jpg'
-
-gems: [jekyll-paginate]
-
-# Search
-search: true
-
-# Night mode
-nightMode: true
-
-# Comments 评论功能
-comments:
-  disqus: false
-  disqus_url: ''
-
-# MathJax 公式支持 by Ray-Eldath
-mathjax: true
-
-# Share
-social-share: true
-social-share-items: ['wechat', 'weibo', 'douban', 'twitter']
-
-# theme color 主题皮肤
-theme-color: 'default'  # pink or default
-
-# Post header background patterns (when the post no cover): circuitBoard, overlappingCircles, food, glamorous, ticTacToe, seaOfClouds
-postPatterns: 'circuitBoard'
-
-# SNS settings 配置社交网站
-# url: email, weibo, zhihu, twitter, instagram, juejin, github, douban, facebook, dribble, uicn, jianshu, medium, linkedin
-sns:
-  #weibo: '//weibo.com/lovecolcol'
-  #juejin: '//juejin.im/user/57a6f434165abd006159b4cc'
-  #instagram: '//www.instagram.com/steveliaocn'
-  github: '//github.com/troyguo'
-
-# Tags 设置标签
-recommend-tags: true # whether or not display recommend-tags on the sidebar
-recommend-condition-size: 12 # a tag will be recommended if the size of it is more than this value
-
-# Build settings
-paginate: 6
-paginate_path: 'page:num'
-exclude: ['node_modules', 'dev', 'package.json', 'gulpfile.js', '.gitignore', 'README.md']
-
-# Markdown
-markdown: kramdown
-highlighter: rouge
+# Jekyll
+permalink:          /blog/:title/
+markdown:           kramdown
+highlighter:        rouge
 kramdown:
-  input: GFM
+  auto_ids:         true
+  footnote_nr:      1
+  entity_output:    as_char
+  toc_levels:       1..6
+  enable_coderay:   false
+sass:
+  sass_dir:         assets/_sass
+  style:            compressed
 
-# RSS
-RSS: false
+# Comment
+#comment:
+#  disqus: BiscuitOS
+  # duoshuo:
+  # youyan:
+#  laibili: MTAyMC8yODgzNC81NDA0
 
-# Permalink
-# See: https://github.com/kaeyleo/jekyll-theme-H2O/issues/35
-permalink: /:year/:month/:day/:title.html
+# Website analytics
+google_analytics: UA-82494501-1
+baidu_analytics: 5b31ffbbdc6cff18727f3adf75a03777    #from //hm.baidu.com/hm.js?***
+
+# Author information:
+author:
+  #resume: /resume
+  name: Troyguo Verification     #the name of Blog section
+  about_me:  UVM, Formal Verification, Palladium
+
+# Social Links
+email:               hit_troy@126.com
+#google.plus:        username
+twitter:             troyguo
+#facebook:           kongsong
+github:              troyguo
+#stackoverflow:      6438519/song-kong   #from a "http://stackoverflow.com/users/123456/username" link
+#linkedin:           kongsong
+#xing:              username
+#instagram:          username
+#lastfm:            username
+#tumblr:            username
+#pinterest:         username
+#foursquare:        username
+#steam:              username
+#dribbble:          username
+#youtube:           username
+#soundcloud:        username
+#weibo:             username
+#flickr:            username
+#codepen:           username
+#keybase:           username
+#xmpp:              username@server.com
+#hackernews:        username
+#behance:           username
 
 # Plugins
-plugins: [jekyll-paginate]
+plugins_dir:
+  - jekyll-feed
+  - jekyll-sitemap
+  - jekyll-gist
+
+# Exclude list
+exclude: [README.md, Gemfile, Gemfile.lock, _site, src, vendor, CNAME, LICENSE, Rakefile,.sass-cache,.DS_Store,.idea]

@@ -1,0 +1,9 @@
+menuconfig BISCUITOS_DRV
+    bool "BiscuitOS Driver"
+
+if BISCUITOS_DRV
+
+config BISCUITOS_MISC
+    bool "BiscuitOS misc driver"
+
+endif # BISCUITOS_DRV

@@ -1,0 +1,1271 @@
+---
+layout:             post
+title:              "ARM32 Boot Stage 1 源码分析"
+date:               2019-03-27 07:36:30 +0800
+categories:         [MMU]
+excerpt:            ARM32 Boot Stage 1 源码分析.
+tags:
+  - MMU
+---
+
+> [GitHub ASM code: .macro](https://github.com/BiscuitOS/HardStack/tree/master/Language/Assembly/ARM-GNU-Assembly/Instruction/%5B.macro%5D)
+>
+> Email: BuddyZhang1 <buddy.zhang@aliyun.com>
+
+# 目录
+
+> - [原理](#原理)
+>
+> - [实践](#实践)
+>
+> - [附录](#附录)
+
+--------------------------------------------------------------
+<span id="原理"></span>
+
+![MMU](https://raw.githubusercontent.com/EmulateSpace/PictureSet/master/BiscuitOS/kernel/IND00000A.jpg)
+
+# 原理
+
+### 术语解析
+
+本段用于说明本文中使用的专业术语
+
+{% highlight base %}
+1) vmlinux(proper)
+   通过源码编译生成的完整内核镜像，位于源码目录下。
+2) Image
+   vmlinux(proper) 经过 OBJCOPY 命令，去掉无用的 section 之后的二进制文件
+3) piggy.gz/piggy_data
+   Image 经过压缩工具压缩后的文件
+4) piggy.o
+   piggy_data 经过汇编打包的 ELF 目标文件
+5) vmlinux(bootstrap)
+   arch/arm/boot/compressed/ 目录下，head.o, misc.o 的文件构成的 bootstrap loader
+   与 piggy_data 组成的 ELF 文件。
+6) zImage
+   vmlinux(bootstrap) 进过 OBJCOPY 工具去掉无用的 section 的二进制文件。
+7) Kbuild
+   Linux 内核源码使用的编译系统，提供了内核源码编译所需的工具和脚本，其中 make，
+   make menuconfig 等功能。
+{% endhighlight %}
+
+##### Boot Stage 1 起始地址定位
+
+Boot Stage 1 是 uboot 将压缩好的内核加载到内核之后开始，到内核被解压出来结束。
+这个阶段主要的作用就是解压内核镜像，并构建内核的各个 section。其源码位于
+arch/arm/boot/compressed/ 目录下。其基本原理就是将这个目录下的源码编译链接成
+一个独立的 ELF 文件，名为 vmlinux，这个 vmlinux 与内核的 vmlinux 名字相似，但
+要注意区分，这个 vmlinux 是一个独立的 ELF 文件，位于 arch/arm/boot/compressed/
+目录下，所以需要调试这部分代码的开发者，调试的对象是该目录下的 vmlinux，而不是内核
+的 vmlinux。开发者可以参考下文进行这部分代码的 GDB 在线调试：
+
+> [Arm32 Boot Stage 1 阶段 GDB 调试方法](https://biscuitos.github.io/blog/BOOTASM-debuggingTools/#ARM%20Boot-Stage1)
+
+对于 Boot Stage 1 的入口函数，可以通过该目录下的 vmlinux.lds.S 文件进行确认，
+具体内容如下：
+
+{% highlight base %}
+ENTRY(_start)
+SECTIONS
+{
+  . = TEXT_START;
+  _text = .;
+
+  .text : {
+    _start = .;
+    *(.start)
+    *(.text)
+    *(.text.*)
+    *(.fixup)
+    *(.gnu.warning)
+    *(.glue_7t)
+    *(.glue_7)
+  }
+{% endhighlight %}
+
+从链接脚本可以知道 vmlinux 链接过程，使用 ENTRY 关键字指定了 vmlinux 的入口地址，
+也就是第一行运行的代码，这里设置为 _start, 从上面可以看出 _start 位于 .text section
+的首地址，所以这里链接脚本告诉开发者，vmlinux 运行的第一行代码就是 vmlinux .text
+section 的第一行代码。继续查看链接脚本， .text section 的布局是所有目标文件的
+.start section 位于 vmlinux .text section 的最前部，所以开发者只需找到目标文件
+中函数 .start section 的文件即可。更多链接脚本的学习可以查看下列文档：
+
+> [GNU LD scripts 详细教程](https://biscuitos.github.io/blog/LD/)
+
+查找 arch/arm/boot/compressed/ 目录下，含有 .start section 的源码位于
+
+{% highlight base %}
+arch/arm/boot/compressed$ grep "\.start" * -nR
+big-endian.S:9:	.section ".start", #alloc, #execinstr
+Binary file head.o matches
+head.S:146:		.section ".start", #alloc, #execinstr
+head-sa1100.S:14:		.section        ".start", "ax"
+head-sharpsl.S:23:		.section        ".start", "ax"
+head-xscale.S:11:		.section        ".start", "ax"
+{% endhighlight %}
+
+所以该目录下一共有 4 个文件含有 .start section. 接下来就要根据 Makefile 来确定
+ .start section 链接先后顺序了。
+
+{% highlight base %}
+HEAD    = head.o
+
+ifeq ($(CONFIG_ARCH_SA1100),y)
+OBJS            += head-sa1100.o
+endif
+
+ifeq ($(CONFIG_CPU_XSCALE),y)
+OBJS            += head-xscale.o
+endif
+
+ifeq ($(CONFIG_PXA_SHARPSL_DETECT_MACH_ID),y)
+OBJS            += head-sharpsl.o
+endif
+
+ifeq ($(CONFIG_CPU_ENDIAN_BE32),y)
+ifeq ($(CONFIG_CPU_CP15),y)
+OBJS            += big-endian.o
+else
+
+$(obj)/vmlinux: $(obj)/vmlinux.lds $(obj)/$(HEAD) $(obj)/piggy.o \
+                $(addprefix $(obj)/, $(OBJS)) $(lib1funcs) $(ashldi3) \
+                $(bswapsdi2) $(efi-obj-y) FORCE
+        @$(check_for_multiple_zreladdr)
+        $(call if_changed,ld)
+        @$(check_for_bad_syms)
+{% endhighlight %}
+
+从 Makefile 编译位置上可以知道，生成 vmlinux 的时候，head.S 最先被链接到 vmlinux
+里面，接着是 head-sa1100.o，head-xscale.o， head-sharpsl.o， big-endian.o。
+所以 vmlinux .text section 第一个 section 从 head.S 的 .start section 开始。
+接下来就开始从 head.S 开始分析。
+
+##### head.S
+
+在 head.S 文件中，可以找到 .start section, 源码如下（代码较长，分段解析）：
+
+{% highlight base %}
+                .section ".start", #alloc, #execinstr
+/*
+ * sort out different calling conventions
+ */
+                .align
+                /*
+                 * Always enter in ARM state for CPUs that support the ARM ISA.
+                 * As of today (2014) that's exactly the members of the A and R
+                 * classes.
+                 */
+ AR_CLASS(      .arm    )
+start:
+                .type   start,#function
+                .rept   7
+                __nop
+                .endr
+{% endhighlight %}
+
+首先使用 .section 伪指令定义了一个名为 .start 的 section，并定义了 section
+的属性是可分配和可执行的，使用 objdump 工具查看其 ELF 信息：
+
+{% highlight base %}
+$objdump -sShxd head.o
+
+head.o:     file format elf32-little
+head.o
+architecture: UNKNOWN!, flags 0x00000011:
+HAS_RELOC, HAS_SYMS
+start address 0x00000000
+
+Sections:
+Idx Name          Size      VMA       LMA       File off  Algn
+  0 .text         00000890  00000000  00000000  00000040  2**5
+                  CONTENTS, ALLOC, LOAD, RELOC, READONLY, CODE
+  1 .data         00000000  00000000  00000000  000008d0  2**0
+                  CONTENTS, ALLOC, LOAD, DATA
+  2 .bss          00000000  00000000  00000000  000008d0  2**0
+                  ALLOC
+  3 .start        00000098  00000000  00000000  000008d0  2**2
+                  CONTENTS, ALLOC, LOAD, RELOC, READONLY, CODE
+  4 .stack        00001000  00000000  00000000  00000968  2**0
+                  ALLOC
+  5 .debug_line   00000277  00000000  00000000  00000968  2**0
+                  CONTENTS, RELOC, READONLY, DEBUGGING
+  6 .debug_info   00000092  00000000  00000000  00000bdf  2**0
+                  CONTENTS, RELOC, READONLY, DEBUGGING
+  7 .debug_abbrev 00000012  00000000  00000000  00000c71  2**0
+                  CONTENTS, READONLY, DEBUGGING
+  8 .debug_aranges 00000028  00000000  00000000  00000c88  2**3
+                  CONTENTS, RELOC, READONLY, DEBUGGING
+  9 .debug_ranges 00000020  00000000  00000000  00000cb0  2**3
+                  CONTENTS, RELOC, READONLY, DEBUGGING
+ 10 .ARM.attributes 0000001f  00000000  00000000  00000cd0  2**0
+                  CONTENTS, READONLY
+{% endhighlight %}
+
+从上面的运行结果可以看出，.start section 的属性为 CONTENTS, ALLOC, LOAD, RELOC,
+READONLY, CODE，这些属性正好符合定义时的属性，这正好是一个代码段该有的属性。
+
+接着使用了 .align 伪指令和 .arm 伪指令告诉汇编器，这是一个使用 arm32 指令集并
+要求对齐的 section。创建第一个标号 start，开发者可以使用 GDB 工具在 start 处
+打断点进行调试。紧接着调用 .type 伪指令告诉汇编器，start 这个标号的类型是一个
+#function，也就是 start 标号是一个函数类型。.rept 伪指令和 .endr 伪指令配合
+使用，告诉汇编器，这里需要循环 7 次，每次都执行 .rept 伪指令和 .endr 伪指令
+之间的代码，这里对应的代码就是 __nop 宏，实现了 7 次等待动作。__nop 宏定义如下：
+
+{% highlight base %}
+                .macro  __nop
+#ifdef CONFIG_EFI_STUB
+                @ This is almost but not quite a NOP, since it does clobber the
+                @ condition flags. But it is the best we can do for EFI, since
+                @ PE/COFF expects the magic string "MZ" at offset 0, while the
+                @ ARM/Linux boot protocol expects an executable instruction
+                @ there.
+                .inst   MZ_MAGIC | (0x1310 << 16)       @ tstne r0, #0x4d000
+#else
+ AR_CLASS(      mov     r0, r0          )
+  M_CLASS(      nop.w                   )
+#endif
+                .endm
+{% endhighlight %}
+
+由于本实践过程没有考虑 CONFIG_ELF_STUB 对应的内容，所以调用 .marco 伪指令和
+.endm 伪指令定义了 __nop 宏的过程是 “mov r0, r0”， 也就是无意义的操作，起到延时
+的作用。接着继续分析 head.S 里面的代码，内容如下：
+
+{% highlight base %}
+#ifndef CONFIG_THUMB2_KERNEL
+                mov     r0, r0
+#else
+ AR_CLASS(      sub     pc, pc, #3      )       @ A/R: switch to Thumb2 mode
+  M_CLASS(      nop.w                   )       @ M: already in Thumb2 mode
+                .thumb
+#endif
+                W(b)    1f
+
+                .word   _magic_sig      @ Magic numbers to help the loader
+                .word   _magic_start    @ absolute load/run zImage address
+                .word   _magic_end      @ zImage end address
+                .word   0x04030201      @ endianness flag
+                .word   0x45454545      @ another magic number to indicate
+                .word   _magic_table    @ additional data table
+
+                __EFI_HEADER
+1:
+{% endhighlight %}
+
+这段代码首先判断有没有定义 CONFIG_THUMB2_KERNEL 宏，以此确定内核此时是否支持
+Thumb 指令集，由于本实践未打开这个宏，所以不执行对应的功能。代码中，没有打开
+CONFIG_THUBM2_KERNEL 宏之后，只调用 "mov r0, r0"，一个空操作，等效于 nop，
+接着代码条用 b 指令直接跳转到 1f 标签处继续执行。在 1 标签之前，代码为数据分配
+了一些存储空间，这些数据也位于 .start section 内部，由于这个段的属性可知，
+这些数据是只读而不可写的。下面来分析这些数据的含义:
+
+> _magic_sig 用于存储 Magic 号，加载时候有用
+>
+> _magic_start 用于指定 zImage 的加载和运行的绝对地址
+>
+> _magic_end 用于指定 zImage 的结束地址
+>
+> 0x04030201 表示字节序标志
+>
+> 0x45454545 表示另一个 Magic 号
+>
+> _magic_table 指向附加的数据表
+>
+> __EFI_HEADER 指向 EFI 头
+
+以上的数据用于 zImage 加载和运行时候使用，其具体的数字是 vmlinux 加载的时候
+就决定了，可以通过查看 vmlinux.lds.S 链接脚本查看，部分内容如下：
+
+{% highlight base %}
+  .table : ALIGN(4) {
+    _table_start = .;
+    LONG(ZIMAGE_MAGIC(2))
+    LONG(ZIMAGE_MAGIC(0x5a534c4b))
+    LONG(ZIMAGE_MAGIC(__piggy_size_addr - _start))
+    LONG(ZIMAGE_MAGIC(_kernel_bss_size))
+    LONG(0)
+    _table_end = .;
+  }
+
+  _magic_sig = ZIMAGE_MAGIC(0x016f2818);
+  _magic_start = ZIMAGE_MAGIC(_start);
+  _magic_end = ZIMAGE_MAGIC(_edata);
+  _magic_table = ZIMAGE_MAGIC(_table_start - _start);
+{% endhighlight %}
+
+链接过程中，创建了一个名为 .table section，这个 section 按四个字节对齐，
+首先定义了 _table_start 指向 section 的起始地址，然后定义了一个 LONG 变量
+存储 ZIMAGE_MAGIC(2) 的值，接着定义了一个 LONG 变量存储 ZIMAGE_MAGIC(0x5a534c4b)
+的值；定义一个 LONG 变量用于存储 ZIMAGE_MAGIC(__piggy_size_addr - _start)
+的值，也就是 __piggy_size_addr 到 _start 之间的长度；第一个 LONG 变量存储
+ZIMAGE_MAGIC(_kernel_bss_size) 的值，也就是内核 .bss section 的值；最后定义了
+一个为 0 的 LONG 值，以及定义 _table_end 指向 .table section 的结束地址。
+接着在 vmlinux.lds.S 链接脚本中，给 _magic_sig 赋值为 ZIMAGE_MAGIC(0x016f2818);
+给 _magic_start 赋值为 ZIMAGE_MAGIC(_start)；给 _magic_end 赋值为
+ZIMAGE_MAGIC(_edata)；_magic_table 赋值给了 ZIMAGE_MAGIC(_table_start - _start)，
+接着开发者可以使用 GDB 工具实践看看运行时布局,如下：
+
+{% highlight bash %}
+(gdb) target remote :1234
+Remote debugging using :1234
+_text () at arch/arm/boot/compressed/head.S:161
+warning: Source file is more recent than executable.
+161			.endr
+(gdb) b BS_debug
+Breakpoint 1 at 0x3c: file arch/arm/boot/compressed/head.S, line 181.
+(gdb) c
+Continuing.
+
+Breakpoint 1, BS_debug () at arch/arm/boot/compressed/head.S:181
+181			bl BS_func
+(gdb) list
+176			.word	_magic_table	@ additional data table
+177
+178			__EFI_HEADER
+179	1:
+180	ENTRY(BS_debug)
+181			bl BS_func
+182	 ARM_BE8(	setend	be		)	@ go BE8 if compiled for BE8
+183	 AR_CLASS(	mrs	r9, cpsr	)
+184	#ifdef CONFIG_ARM_VIRT_EXT
+185			bl	__hyp_stub_install	@ get into SVC mode, reversibly
+(gdb) print &_magic_sig
+$1 = (<variable (not text or data), no debug info> *) 0x16f2818
+(gdb) print &_magic_start
+$2 = (<text variable, no debug info> *) 0x0 <_text>
+(gdb) print &_magic_end
+$3 = (<variable (not text or data), no debug info> *) 0x42ba08 <free_mem_end_ptr>
+(gdb) print &_magic_table
+$4 = (<variable (not text or data), no debug info> *) 0x3af8
+(gdb)
+{% endhighlight %}
+
+在使用 objdump 工具查看 vmlinux 的 .text section, 内容如下：
+
+{% highlight bash %}
+$ objdump -sShdx vmlinux
+
+Contents of section .text:
+ 0000 0000a0e1 0000a0e1 0000a0e1 0000a0e1  ................
+ 0010 0000a0e1 0000a0e1 0000a0e1 0000a0e1  ................
+ 0020 050000ea 18286f01 00000000 08ba4200  .....(o.......B.
+ 0030 01020304 45454545 f83a0000 d00d00eb  ....EEEE.:......
+ 0040 00900fe1 8d0d00eb 0170a0e1 0280a0e1  .........p......
+ 0050 00200fe1 030012e3 0100001a 1700a0e3  . ..............
+ 0060 563412ef 00000fe1 1a0020e2 1f0010e3  V4........ .....
+ 0070 1f00c0e3 d30080e3 0400001a 010c80e3  ................
+{% endhighlight %}
+
+从上面的运行分析之后，可以知道，在 .text section 的头部定义了一个 zImage 的
+ Magic 头，这个 zImage Magic 头的布局如下：
+
+{% highlight bash %}
+
++-------------------------------------+ low_addr
+|            Magic Number             |
++-------------------------------------+
+|         Magic Start Address         |
++-------------------------------------+
+|          Magic End Address          |
++-------------------------------------+
+|             0x01020304              |
++-------------------------------------+
+|             0x45454545              |
++-------------------------------------+
+|      Magic Table Base Address       |
++-------------------------------------+
+|            __EFI_HEADER             |
++-------------------------------------+ high_addr
+{% endhighlight %}
+
+__EFI_HEADER 定义在 elf-header.S 文件中，由于本实践不支持 CONFIG_EFI_STUB 功能，
+所以这里不讨论这个部分。接着继续讨论 head.S 文件中内容。
+
+{% highlight bash %}
+ ARM_BE8(       setend  be              )       @ go BE8 if compiled for BE8
+ AR_CLASS(      mrs     r9, cpsr        )
+#ifdef CONFIG_ARM_VIRT_EXT
+                bl      __hyp_stub_install      @ get into SVC mode, reversibly
+#endif
+{% endhighlight %}
+
+由于不支持 ARM_BE8, 所以 "setend be" 指令不被执行，继续执行 "mrs r9, cpsr"
+指令，这个指令的作用就是将 CPSR 寄存器的值存储到 R9 寄存器中。接下来检查是否支持
+CONFIG_ARM_VIRT_EXT 拓展，本实践平台上支持这个功能，所以接上来调用 "bl __hyp_stub_install"
+指令。__hyp_stub_install 函数定义在 hyp-stub.S 文件中，如下：
+
+{% highlight bash %}
+/*
+ * Hypervisor stub installation functions.
+ *
+ * These must be called with the MMU and D-cache off.
+ * They are not ABI compliant and are only intended to be called from the kernel
+ * entry points in head.S.
+ */
+@ Call this from the primary CPU
+ENTRY(__hyp_stub_install)
+        store_primary_cpu_mode  r4, r5, r6
+ENDPROC(__hyp_stub_install)
+
+        @ fall through...
+
+@ Secondary CPUs should call here
+ENTRY(__hyp_stub_install_secondary)
+
+
+
+        .macro  store_primary_cpu_mode  reg1:req, reg2:req, reg3:req
+        .endm
+{% endhighlight %}
+
+
+从函数的注释可以看出，函数的作用是安装管理程序， __hyp_stub_install 函数内部调用
+了 store_primary_cpu_mode 宏，并传入 r4, r5, 和 r6 三个参数，由于
+store_primary_cpu_mode 宏的定义里不做任何实际操作，那么 __hyp_stub_install
+函数就继续执行 __hyp_stub_install_secondary 函数，函数的源码如下：
+
+{% highlight bash %}
+/*
+ * The zImage loader only runs on one CPU, so we don't bother with mult-CPU
+ * consistency checking:
+ */
+        .macro  compare_cpu_mode_with_primary mode, reg1, reg2, reg3
+        cmp     \mode, \mode
+        .endm
+
+@ Secondary CPUs should call here
+ENTRY(__hyp_stub_install_secondary)
+        mrs     r4, cpsr
+        and     r4, r4, #MODE_MASK
+
+        /*
+         * If the secondary has booted with a different mode, give up
+         * immediately.
+         */
+        compare_cpu_mode_with_primary   r4, r5, r6, r7
+        retne   lr
+
+        /*
+         * Once we have given up on one CPU, we do not try to install the
+         * stub hypervisor on the remaining ones: because the saved boot mode
+         * is modified, it can't compare equal to the CPSR mode field any
+         * more.
+         *
+         * Otherwise...
+         */
+
+        cmp     r4, #HYP_MODE
+        retne   lr                      @ give up if the CPU is not in HYP mode
+{% endhighlight %}
+
+函数首先调用 mrs 指令将 CPSR 寄存器的值存储到 R4 寄存器里，然后调用 and 指令
+将 r4 中的值与 MODE_MASK 相与，结果存放在 r4 中，总所周知，CPSR 的第 5 位描述当前
+CPU 的模式，如下图：
+
+{% highlight bash %}
+CPSR：
+
+  32        27         25     20        16        10        5        0
+  +-+-+-+-+-+----------+-+----+---------+---------+-+-+-+-+-+--------+
+  | | | | | |          | |    |         |         | | | | | |        |
+  |N|Z|C|V|Q| IT[1:0]  |J|    | GE[3:0] | IT[7:2] |E|A|I|F|T| M[4:0] |
+  | | | | | |          | |    |         |         | | | | | |        |
+  +-+-+-+-+-+----------+-+----+---------+---------+-+-+-+-+-+--------+
+  | <-----> |                                       | <-> |
+   Condition                                       Mask bits
+     flags
+{% endhighlight %}
+
+ARM 所支持的模式定义如下：
+
+{% highlight bash %}
+#if defined(__KERNEL__) && defined(CONFIG_CPU_V7M)
+/*
+ * Use 0 here to get code right that creates a userspace
+ * or kernel space thread.
+ */
+#define USR_MODE        0x00000000
+#define SVC_MODE        0x00000000
+#else
+#define USR_MODE        0x00000010
+#define SVC_MODE        0x00000013
+#endif
+#define FIQ_MODE        0x00000011
+#define IRQ_MODE        0x00000012
+#define MON_MODE        0x00000016
+#define ABT_MODE        0x00000017
+#define HYP_MODE        0x0000001a
+#define UND_MODE        0x0000001b
+#define SYSTEM_MODE     0x0000001f
+#define MODE32_BIT      0x00000010
+#define MODE_MASK       0x0000001f
+{% endhighlight %}
+
+代码中调用 compare_cpu_mode_with_primary 宏对 r4 寄存器进行带优先级的比较
+操作，如果比较的结果不等于零那么就直接退出函数；如果等于零，那么就继续执行函数，
+从 compare_cpu_mode_with_primary 宏的定义可知，它将 r4 与 r4 寄存器进行对比，
+对比的值一定等于 0， 所以函数继续执行，接下来函数调用 cmp 指令，将 r4 的值
+与 HYP_MODE 模式进行对比，确定当前模式是否是 HYP_MODE，如果是，那么就继续执行
+函数；如果不是，则直接返回。使用 GDB 实际测试结果如下：
+
+{% highlight bash %}
+(gdb) target remote :1234
+Remote debugging using :1234
+_text () at arch/arm/boot/compressed/head.S:161
+161			.endr
+(gdb) b BS_X
+Note: breakpoint 1 also set at pc 0x3680.
+Breakpoint 2 at 0x3680: file arch/arm/boot/compressed/hyp-stub.S, line 97.
+(gdb) c
+Continuing.
+
+Breakpoint 1, __hyp_stub_install_secondary ()
+    at arch/arm/boot/compressed/hyp-stub.S:97
+97		mrs	r4, cpsr
+(gdb) n
+98		and	r4, r4, #MODE_MASK
+(gdb) n
+104		compare_cpu_mode_with_primary	r4, r5, r6, r7
+(gdb) n
+105		retne	lr
+(gdb) n
+116		cmp	r4, #HYP_MODE
+(gdb) info reg
+r0             0x0                 0
+r1             0x0                 0
+r2             0x0                 0
+r3             0x0                 0
+r4             0x13                19
+r5             0x0                 0
+r6             0x0                 0
+r7             0x0                 0
+r8             0x0                 0
+{% endhighlight %}
+
+从上面可知，r4 所存储的当前模式不是 HYP 模式，所以放弃进入 HYP 模式。接下来函数
+直接返回。接着函数返回之后，函数继续在 head.S 中继续执行如下代码：
+
+{% highlight bash %}
+                mov     r7, r1                  @ save architecture ID
+                mov     r8, r2                  @ save atags pointer
+
+
+#ifndef CONFIG_CPU_V7M
+                /*
+                 * Booting from Angel - need to enter SVC mode and disable
+                 * FIQs/IRQs (numeric definitions from angel arm.h source).
+                 * We only do this if we were in user mode on entry.
+                 */
+                mrs     r2, cpsr                @ get current mode
+                tst     r2, #3                  @ not user?
+                bne     not_angel
+                mov     r0, #0x17               @ angel_SWIreason_EnterSVC
+ ARM(           swi     0x123456        )       @ angel_SWI_ARM
+ THUMB(         svc     0xab            )       @ angel_SWI_THUMB
+not_angel:
+                safe_svcmode_maskall r0
+                msr     spsr_cxsf, r9           @ Save the CPU boot mode in
+                                                @ SPSR
+#endif
+{% endhighlight %}
+
+由于 uboot 结束后，会将 architecture ID 存放在 r7 寄存器，将 uboot 的 ATAG
+参数的指针存放在 r8 寄存器里。于是代码中调用 mov 指令将 r7 的值存储到 r1 寄存器里，
+将 r8 寄存器的值存储到 r2 寄存器里。由于本实践过程中，CONFIG_CPU_V7M 宏没有打开，
+那么继续执行下一条指令是 "mrs r2, cpsr"， 这条指令将 CPSR 寄存器的值存储到 r2 寄存器
+内，然后调用 tst 指令将 r2 寄存器的值与立即数 3 相与，如果相与的结果不等于 0， 那么
+表示当前 CPU 所处的模式不是 User 模式，那么跳转到 not_angel 标签处继续执行；
+如果相与的结果等于零，那么 CPU 处于 User 模式，那么调用 swi 指令直接进入 SVC 模式。
+这段代码的主要任务就是如果当前模式是 User 模式，那么从 Angel 启动，在启动之前，
+需要进入 SVC 模式，并关闭所有的 FIQs/IRQs 中断。接着调用 safe_svcmode_maskall
+宏，接下来分析 safe_svcmode_maskall 宏，代码如下：
+
+{% highlight bash %}
+/*
+ * Helper macro to enter SVC mode cleanly and mask interrupts. reg is
+ * a scratch register for the macro to overwrite.
+ *
+ * This macro is intended for forcing the CPU into SVC mode at boot time.
+ * you cannot return to the original mode.
+ */
+.macro safe_svcmode_maskall reg:req
+#if __LINUX_ARM_ARCH__ >= 6 && !defined(CONFIG_CPU_V7M)
+        mrs     \reg , cpsr
+        eor     \reg, \reg, #HYP_MODE
+        tst     \reg, #MODE_MASK
+        bic     \reg , \reg , #MODE_MASK
+        orr     \reg , \reg , #PSR_I_BIT | PSR_F_BIT | SVC_MODE
+THUMB(  orr     \reg , \reg , #PSR_T_BIT        )
+        bne     1f
+        orr     \reg, \reg, #PSR_A_BIT
+        badr    lr, 2f
+        msr     spsr_cxsf, \reg
+        __MSR_ELR_HYP(14)
+        __ERET
+1:      msr     cpsr_c, \reg
+2:
+#else
+/*
+ * workaround for possibly broken pre-v6 hardware
+ * (akita, Sharp Zaurus C-1000, PXA270-based)
+ */
+        setmode PSR_F_BIT | PSR_I_BIT | SVC_MODE, \reg
+#endif
+.endm
+{% endhighlight %}
+
+由于本实践内容符合 __LINUX_ARM_ARCH__ 大于 6，而且 CONFIG_CPU_V7M 宏没有
+定义，所以宏执行的代码为上部。宏首先执行 "mrs \reg, cpsr" 指令，根据调用宏处可知，
+宏将 CPSR 的值存储到 r0 寄存器中，然后将 r0 寄存器的值与 HYP_MODE 宏进行异或
+操作，结果存储到 r0 寄存器内，然后调用 tst 指令将 r0 寄存器的值与 MODE_MASK
+进行与操作, 最后调用 bic 指令清除掉 MODE_MASK 对应的位，这样 r0 中模式位就全部
+清零。接着调用 orr 指令将 (PSR_I_BIT | PSR_F_BIT | SVC_MODE) 的值与 r0 寄存器
+的值相与之后存储到 r0 寄存器中。根据 CPSR 寄存器的布局可知：
+
+{% highlight bash %}
+CPSR：
+
+  32        27         25     20        16        10        5        0
+  +-+-+-+-+-+----------+-+----+---------+---------+-+-+-+-+-+--------+
+  | | | | | |          | |    |         |         | | | | | |        |
+  |N|Z|C|V|Q| IT[1:0]  |J|    | GE[3:0] | IT[7:2] |E|A|I|F|T| M[4:0] |
+  | | | | | |          | |    |         |         | | | | | |        |
+  +-+-+-+-+-+----------+-+----+---------+---------+-+-+-+-+-+--------+
+  | <-----> |                                       | <-> |
+   Condition                                       Mask bits
+     flags
+{% endhighlight %}
+
+PSR_I_BIT 对应的是 CPSR 的 I 位，这个位用于 IRQ 的掩码位；PSR_F_BIT 对应的是
+CPSR 的 F 位，该位用于 FIQ 的掩码。这两位只要置位，那么对应的中断就断就会被屏蔽。
+或上 SVC_MODE 就是将模式设置为 SVC 模式。orr 指令执行的结果不等于零，那么跳转
+到 1 标签处，1 标签处调用 "msr cpsr_c, \reg" ，这里 cpsr_c 代表 CPSR 的低
+8 位，也就是 CPSR 的控制位。这样 CPU 就进入屏蔽了 IRQ，FRQ 的 SVC 模式。
+调用完 safe_svcmode_maskall 之后，head.S 调用 "msr spsr_cxsf, r9" 将 r9
+寄存器的值存储到 spsr_cxsf，这里 spsr_cxsf 代表 SPSR 寄存器的 C 域， X 域，
+S 域， 和 F 域。由于在设置进入 SVC 模式之前，就将 CPSR 寄存器的值存储到 r9
+寄存器，所以 r9 寄存器保存了 CPU 最开始的模式。最后将原始的 CPU 模式存储到了
+SPSR 寄存器中。
+
+接下来，head.S 将找到物理地址的起始地址，这个时候 MMU 是没有打开的，这个时候是
+忽略任何地址对齐和偏移。head.S 选择最开始的 128MB 处作为对齐地址，然后将
+zImage 放在这物理地址起始处，这 128MB 就是用来专门存放 zImage 镜像的。具体
+代码如下：
+
+{% highlight bash %}
+#ifdef CONFIG_AUTO_ZRELADDR
+                /*
+                 * Find the start of physical memory.  As we are executing
+                 * without the MMU on, we are in the physical address space.
+                 * We just need to get rid of any offset by aligning the
+                 * address.
+                 *
+                 * This alignment is a balance between the requirements of
+                 * different platforms - we have chosen 128MB to allow
+                 * platforms which align the start of their physical memory
+                 * to 128MB to use this feature, while allowing the zImage
+                 * to be placed within the first 128MB of memory on other
+                 * platforms.  Increasing the alignment means we place
+                 * stricter alignment requirements on the start of physical
+                 * memory, but relaxing it means that we break people who
+                 * are already placing their zImage in (eg) the top 64MB
+                 * of this range.
+                 */
+ENTRY(BS_debug)
+                mov     r4, pc
+                and     r4, r4, #0xf8000000
+                /* Determine final kernel image address. */
+                add     r4, r4, #TEXT_OFFSET
+#else
+                ldr     r4, =zreladdr
+#endif
+{% endhighlight %}
+
+这段代码主要用于计算内核的解压地址，并将解压地址存储到 r4 寄存器中。
+首先调用代码 "mov, r4, pc"，将当前 CPU 执行的地址存储到 r4 ，然后在将 0xf8000000
+的值与 r4 相与达到对齐的作用，确保之后的内核解压地址按 128M 对齐，然后将 r4 寄存器的
+值加上 TEXT_OFFSET，TEXT_OFFSET 代表内核的解压地址，这样 r4 寄存器就存储了内核的解压
+地址。TEXT_OFFSET 定义在 arch/arm/Makefile 中，如下：
+
+{% highlight bash %}
+# Text offset. This list is sorted numerically by address in order to
+# provide a means to avoid/resolve conflicts in multi-arch kernels.
+textofs-y       := 0x00008000
+
+
+# The byte offset of the kernel image in RAM from the start of RAM.
+TEXT_OFFSET := $(textofs-y)
+{% endhighlight %}
+
+从上面可以看出，ARM 32 默认的 TEXT_OFFSET 设置为 0x00008000, 这个地址就是内核
+的解压地址。接着执行如下代码：
+
+{% highlight bash %}
+                /*
+                 * Set up a page table only if it won't overwrite ourself.
+                 * That means r4 < pc || r4 - 16k page directory > &_end.
+                 * Given that r4 > &_end is most unfrequent, we add a rough
+                 * additional 1MB of room for a possible appended DTB.
+                 */
+                mov     r0, pc
+                cmp     r0, r4
+                ldrcc   r0, LC0+32
+                addcc   r0, r0, pc
+                cmpcc   r4, r0
+                orrcc   r4, r4, #1              @ remember we skipped cache_on
+                blcs    cache_on
+{% endhighlight %}
+
+这段代码的主要任务就是确认 zImage 自己建立的页表会不会被 zImage 镜像的重定位
+给覆盖掉。从原理可以知道，zImage 被加载到内存运行之后，会将自己重定位到新的物理地址
+运行，这就会出现要创建的页表可能被 zImage 重定位之后覆盖。zImage 镜像如果不被自己给
+覆盖，需要满足两个条件中的任意一个：
+
+> r4 < PC
+
+这种情况下，内核的解压地址小于当前 PC 运行物理地址。
+
+> r4 - 16k page directory > &_end
+
+这种情况下，内核的解压地址大于 zImage 结束地址之后的 16KB。一般情况下解压内核
+的地址大于 zImage 的结束地址是不太寻常的。这种情况下需要添加 1MB 的空间与链接在
+zImage 中的 DTB 隔开。
+
+运行到这里，首先获得 PC 寄存器的值，然后调用 "cmp r0, r4", 从之前的代码可知，
+r4 寄存器存储着解压内核的地址，这里执行这条命令的含义是，如果 r0 > r4，那么代表当前
+PC 执行地址大于内核解压地址，这种情况符合之前的讨论，所以那么就执行 cache_on 宏；
+如果 r0 < r4, 那么 zImage 的运行范围包含了要解压内核的地址，因此需要继续进行检测。
+这里执行命令 "ldrcc r0, LC0+32", 通过这个命令，将 LC0 偏移 32 个字节地址对应的内容
+拷贝到 r0 寄存器。从后面的讨论可以知道，"LC0+32" 处对应的内容是 zImage 需要重定位
+的长度再加上 "16K + 1M" 的长度。这里再加上 PC 的值，确保当前运行的代码也不会被覆盖。
+接着执行命令 "cmpcc r4, r0", 重新确定解压内核的物理地址与 zImage 重定位的物理地址
+是否存在重叠。如果存在，那么将 r4 寄存器的值加 1，以此标记 cache_on 被跳过；否则
+执行 "blcs cache_on" 打开缓存。开发者们可以通过实际 GDB 调试代码可验证。
+
+{% highlight bash %}
+(gdb) target remote :1234
+Remote debugging using :1234
+_text () at arch/arm/boot/compressed/head.S:161
+161			.endr
+(gdb) b BS_debug
+Breakpoint 1 at 0xac: file arch/arm/boot/compressed/head.S, line 251.
+(gdb) c
+Continuing.
+
+Breakpoint 1, BS_debug () at arch/arm/boot/compressed/head.S:251
+251			mov	r0, pc
+(gdb) n
+252			cmp	r0, r4
+(gdb) n
+253			ldrcc	r0, LC0+32
+(gdb) n
+254			addcc	r0, r0, pc
+(gdb) n
+255			cmpcc	r4, r0
+(gdb) n
+256			orrcc	r4, r4, #1		@ remember we skipped cache_on
+(gdb) n
+257			blcs	cache_on
+(gdb) n
+restart () at arch/arm/boot/compressed/head.S:259
+259	restart:	adr	r0, LC0
+(gdb)
+{% endhighlight %}
+
+从上面 GDB 的实际运行结果可以知道，当前实践的平台在创建页表的位置会被 zImage
+镜像进行重定位的时候覆盖，所以代码接下来执行的内容是：
+
+{% highlight bash %}
+restart:        adr     r0, LC0
+                ldmia   r0, {r1, r2, r3, r6, r10, r11, r12}
+                ldr     sp, [r0, #28]
+
+                /*
+                 * We might be running at a different address.  We need
+                 * to fix up various pointers.
+                 */
+                sub     r0, r0, r1              @ calculate the delta offset
+                add     r6, r6, r0              @ _edata
+                add     r10, r10, r0            @ inflated kernel size location
+{% endhighlight %}
+
+这段代码的主要任务就是将 LC0 对应的内容加载到制定的寄存器，并根据实际运行情况校正寄
+存器中值。首先将 LC0 的地址存储到 r0 寄存器中，然后使用 ldmia 将 r0 对于地址的值按
+递增的方式，以此存储到 r1, r2, r3, r6, r10, r11, r12 寄存里，这里可以再看一下 LC0
+的内容：
+
+<span id="LC0_Content"></span>
+
+{% highlight bash %}
+                .align  2
+                .type   LC0, #object
+LC0:            .word   LC0                     @ r1
+                .word   __bss_start             @ r2
+                .word   _end                    @ r3
+                .word   _edata                  @ r6
+                .word   input_data_end - 4      @ r10 (inflated size location)
+                .word   _got_start              @ r11
+                .word   _got_end                @ ip
+                .word   .L_user_stack_end       @ sp
+                .word   _end - restart + 16384 + 1024*1024
+                .size   LC0, . - LC0
+{% endhighlight %}
+
+> LC0 + 0
+
+该地址存储着 LC0 的物理地址
+
+> LC0 + 4
+
+该地址存储着 zImage 运行时 BSS 段的起始物理地址 __bss_start
+
+> LC0 + 8
+
+该地址存储着 zImage 运行时，镜像带 BSS 的结束物理地址 _end。
+
+> LC0 + 12
+
+该地址存储着 zImage 运行时，镜像不带 BSS 的结束物理地址 _edata。
+该地址和 zImage 的长度一致。
+
+> LC0 + 16
+
+该地址存储着内核解压之后的长度
+
+> LC0 + 20
+
+该地址存储着 zImage 运行时 GOT 表的起始物理地址 _got_start。
+
+> LC0 + 24
+
+该地址存储着 zImage 运行时 GOT 表的结束物理地址 _got_end。
+
+> LC0 + 28
+
+该地址存储着 zImage 运行时堆栈的栈顶的物理地址 .L_user_stack_end，其定义如下：
+
+{% highlight bash %}
+.align
+.section ".stack", "aw", %nobits
+.L_user_stack:  .space  4096
+.L_user_stack_end:
+{% endhighlight %}
+
+> LC0 + 32
+
+该地址存储着 zImage 需要重定位的长度。这个值在计算出 restart 和 _end 之间
+的差值之后，额外添加了 16K 和 1M 空间用于包含页表和与 DTB 之间的屏障距离。
+
+由于 LC0 中的地址是相对地址，需要校正获得正确的物理地址，接下来的三条命令都是校正
+r0, r6, r10 寄存器的物理地址。r10 寄存器存储着 Image 长度，也就是解压之后的内核长度。
+在这里 r10 对应的位置为什么就存储着解压后内核的长度？
+
+回答这个问题首先应该明确几点：解压后的内核就是之前所说的 Image， Image 有完整的
+vmlinux 经过 OBJCOPY 命令生成的二进制文件，这个 Image 是可以直接在内存上运行的，
+所以知道 Image 长度是一个至关重要的问题。那么下面介绍一下编译系统 Kbuild 是如何
+计算 Image 长度呢？
+
+首先 Image 经过压缩之后获得压缩内核 piggy_data，其使用的压缩命令如下：
+
+{% highlight bash %}
+$(obj)/piggy_data: $(obj)/../Image FORCE
+        $(call if_changed,$(compress-y))
+{% endhighlight %}
+
+这段代码位于 arch/arm/boot/compressed/Makefile, 这段代码就是 Image 压缩生成
+piggy_data 压缩内核的过程，具体使用哪种压缩方法，通过 compress-y 决定，其定义
+也在同一个文件中，如下：
+
+{% highlight bash %}
+compress-$(CONFIG_KERNEL_GZIP) = gzip
+compress-$(CONFIG_KERNEL_LZO)  = lzo
+compress-$(CONFIG_KERNEL_LZMA) = lzma
+compress-$(CONFIG_KERNEL_XZ)   = xzkern
+compress-$(CONFIG_KERNEL_LZ4)  = lz4
+{% endhighlight %}
+
+从上面的定义可知，内核支持多种压缩方式，其中以 gzip 为例，piggy_data 的压缩命令是：
+
+{% highlight bash %}
+$(obj)/piggy_data: $(obj)/../Image FORCE
+        $(call if_changed,gzip)
+{% endhighlight %}
+
+于是开发者可以去 Kbuild 的命令库里查看这个命令的具体过程，Kbuild 的命令库位于源码
+scripts/Makefile.lib, gzip 命令如下：
+
+{% highlight bash %}
+quiet_cmd_gzip = GZIP    $@
+      cmd_gzip = cat $(filter-out FORCE,$^) | gzip -n -f -9 > $@
+{% endhighlight %}
+
+所以可以看到 gizp 的执行过程，这里有个很重要的概念：压缩工具无论进行何种压缩算法，
+会在压缩文件的最后四个字节存储原始文件的大小，并按大端的模式存储。例如使用工具分别
+查看 Image 的大小以及 piggy_data 的最后四个字节，如下：
+
+{% highlight bash %}
+$ ll arch/arm/boot/Image
+-rwxrwxr-x 1 buddy buddy 11932120 4月   1 07:06 Image*
+
+$ bless arch/arm/boot/compressed/piggy_data
+AB F1 9E CF FC 17 12 A8 9E 6D AD 6D A9 2F 63
+1E EF 75 B1 17 C6 B9 AB C4 67 30 9E 7D 43 8C
+31 78 62 AA F8 12 C6 E0 6A 8C 23 0A D5 58 B7
+2D 52 D7 23 FE 7E 02 3D BE 45 CE D3 76 23 81
+9C B6 DA C9 1B 73 50 EA EE DC 37 F8 3F E9 3C
+07 76 D8 11 B6 00
+{% endhighlight %}
+
+通过上面的数据分析可到，piggy_data 的最后四个字节是 DB 11 B6 00, 按小端调整之后的
+值是 0x00B611D8, 对应十进制值是 11932120, 数值正好对应 Image 的长度，因此上面的
+推论是正确的。这是 piggy_data 的最后四字节存储着 Image 的长度，根据原理可以知道
+Kbuild 编译系统将 piggy.S 汇编文件将 piggy_data 二进制文件封装成一个汇编文件，并
+链接成一个 ELF 文件，并在 piggy.S 中定义了两个全局符号： "input_data" 和
+"input_data_end", 这两个符号标记了 piggy.o 里 piggy_data 的起始偏移地址和
+终止偏移地址。并在该目录下的 vmlinux.lds.S 脚本里定义了 .piggydata section,
+section 内部也定义了一个变量 __piggy_size_addr, 这个变量正好指向了 piggy_data
+最后 4 个字节。因此在 LC0+32 处定义为 "input_data_end - 4", 因此以上数据都可以
+知道压缩内核解压之后的长度。其他压缩方法同理。接着执行如下命令：
+
+{% highlight bash %}
+/*
+ * The kernel build system appends the size of the
+ * decompressed kernel at the end of the compressed data
+ * in little-endian form.
+ */
+ldrb    r9, [r10, #0]
+ldrb    lr, [r10, #1]
+orr     r9, r9, lr, lsl #8
+ldrb    lr, [r10, #2]
+ldrb    r10, [r10, #3]
+orr     r9, r9, lr, lsl #16
+orr     r9, r9, r10, lsl #24
+{% endhighlight %}
+
+通过上面的分析可以知道，r10 寄存里存储 piggy_data 的最后面四个字节地址，这个地址
+存储着压缩内核解压之后的长度，也就是 Image 的长度，但是其长度在这四个字节里按大端
+格式存储，因此需要上面的代码将大端数据读出转换为小端格式。代码逻辑很简单，就是使用
+ldrb 指令从 r10 对应的地址上读一个字节，然后调整字节序，最后压缩内核解压之后的长度
+存储到 r9 寄存器里。使用 GDB 调试结果如下：
+
+{% highlight bash %}
+(gdb) target remote :1234
+Remote debugging using :1234
+_text () at arch/arm/boot/compressed/head.S:161
+161			.endr
+(gdb) b BS_debug
+Breakpoint 1 at 0xe0: file arch/arm/boot/compressed/head.S, line 276.
+(gdb) c
+Continuing.
+
+Breakpoint 1, BS_debug () at arch/arm/boot/compressed/head.S:276
+276			ldrb	r9, [r10, #0]
+(gdb) info reg
+r0             0x0                 0
+r1             0x24c               588
+r2             0x42b9b8            4372920
+r3             0x42b9d0            4372944
+r4             0x8001              32769
+r5             0x0                 0
+r6             0x42b9b8            4372920
+r7             0x0                 0
+r8             0x0                 0
+r9             0x400001d3          1073742291
+r10            0x42b979            4372857
+Quit
+(gdb) n
+277			ldrb	lr, [r10, #1]
+(gdb) n
+278			orr	r9, r9, lr, lsl #8
+(gdb) n
+279			ldrb	lr, [r10, #2]
+(gdb) n
+280			ldrb	r10, [r10, #3]
+(gdb) n
+281			orr	r9, r9, lr, lsl #16
+(gdb) n
+282			orr	r9, r9, r10, lsl #24
+(gdb) n
+286			add	sp, sp, r0
+(gdb) info reg
+r0             0x0                 0
+r1             0x24c               588
+r2             0x42b9b8            4372920
+r3             0x42b9d0            4372944
+r4             0x8001              32769
+r5             0x0                 0
+r6             0x42b9b8            4372920
+r7             0x0                 0
+r8             0x0                 0
+r9             0xb611d8            11932120
+r10            0x0                 0
+{% endhighlight %}
+
+此时读出压缩内核的长度是 0xb611d8, 即这个值对应着 Image 的长度。接着继续执行
+下面代码：
+
+{% highlight bash %}
+#ifndef CONFIG_ZBOOT_ROM
+                /* malloc space is above the relocated stack (64k max) */
+                add     sp, sp, r0
+                add     r10, sp, #0x10000
+#else
+                /*
+                 * With ZBOOT_ROM the bss/stack is non relocatable,
+                 * but someone could still run this code from RAM,
+                 * in which case our reference is _edata.
+                 */
+                mov     r10, r6
+#endif
+
+                mov     r5, #0                  @ init dtb size to 0
+{% endhighlight %}
+
+这段代码的主要任务就是计算 zImage 镜像加上 BSS/Stack/Malloc 之后的总长度是多少，
+并将该结果存储到 r10 寄存器中。
+
+这里涉及到 CONFIG_ZBOOT_ROM 宏，如果宏没有定义，那么 r10 寄存器存储的是 zImage
+镜像长度加上 BSS/Stack/Malloc 之后的长度；如果宏已经定义了，那么 BSS/Stack
+是不能被重定位的，所以 r10 值存储了 zImage 的长度。由于这里不涉及 zImage 和 DTB
+同时打包的情况，所以接下来关于 CONFIG_ARM_APPENDED_DTB 的汇编代码占时不分析。
+
+{% highlight bash %}
+/*
+ * Check to see if we will overwrite ourselves.
+ *   r4  = final kernel address (possibly with LSB set)
+ *   r9  = size of decompressed image
+ *   r10 = end of this image, including  bss/stack/malloc space if non XIP
+ * We basically want:
+ *   r4 - 16k page directory >= r10 -> OK
+ *   r4 + image length <= address of wont_overwrite -> OK
+ * Note: the possible LSB in r4 is harmless here.
+ */
+                add     r10, r10, #16384
+                cmp     r4, r10
+                bhs     wont_overwrite
+                add     r10, r4, r9
+                adr     r9, wont_overwrite
+                cmp     r10, r9
+                bls     wont_overwrite
+{% endhighlight %}
+
+接下来的代码主要任务就是确认 zImage 重定位之后会不会覆盖到之前 zImage 运行时的数据
+和段。由原理可以知道，该阶段 zImage 加载到内存 0 地址之后，进行简单的初始化之后，会将
+zImage 加载到一个比较安全的地址运行，这里称为 zImage 的重定位。执行这段代码之前，
+r10 寄存器存储 zImage 需要重定位的长度，这个长度包含了 zImage 本身大小，还有 BSS/
+Stack/Malloc 的长度。r4 寄存器依旧存储内核解压的物理地址。r9 寄存器存储了解压之后内核
+长度。
+
+如果不存在覆盖问题，那么必须满足下面几种情况：
+
+> r4 - 16K >= r10
+
+对于这种情况，内存分布如下：
+
+{% highlight bash %}
+
+0      r10: zImage + BSS + Stack + Malloc      16K       r9: Image
+| <---------------------------------------> | <---> | <----------- -> |
++-------------------------------------------+-------+-----------------+
+|                                           |       |                 |
+|                                           |       |                 |
+|                                           |       |                 |
++-------------------------------------------+-------+-----------------+
+                                                    r4
+{% endhighlight %}
+
+在这种情况下，zImage 运行的地址域与内核解压之后的地址域是不重合的，所以
+zImage 不需要重定位，直接在原始地址上直接运行。
+
+> r4 + image < wont_overwrite
+
+对于这种情况，内存布局如下：
+
+0              r10: zImage + BSS + Stack + Malloc
+| <---------------------------------------------------------> |
++-------+-----------------+-----+-----------------------------+-------+
+|       |                 |     |                             |       |
+|       |                 |     |                             |       |
+|       |                 |     |                             |       |
++-------+-----------------+-----+-----------------------------+-------+
+        | <-------------> |     wont_overwrite
+        r4   r9: Image
+
+{% endhighlight %}
+
+首先调用命令 "add r10, r10, #16384", 将 r10 的长度再增加 16K，此时 r10 代表
+zImage 长度加上 BSS/Stack/Malloc，再加上 16K 的长度，此时 r10 也可以表示 zImage
+运行时完整的长度。接着调用 "cmp r4, r10" 命令，查看此时 zImage 的长度域与解压内核
+长度域之间的关系是否满足 "r4 - 16K >= r10" 条件, 如果满足，则执行
+"bhs wont_overwrite", 这样 zImage 就不需要重定位；如果不满足，那么继续确认是否
+满足第二个条件，执行命令 "add r10, r4, r9", 使 r10 寄存器存储解压内核的终止
+物理地址，再调用命令 "adr r9, wont_overwrite" 获得 zImage 中 wont_overwrite
+的地址，最后执行命令 "cmp r10, r9", 如果 r10 小于 r9, 那么满足第二个条件，则执行
+"bls wont_overwrite", zImage 不需要重定位；反之 zImage 需要重定位。
+这里开发者们可以使用 GDB 调试这段代码，运行结果如下：
+
+{% highlight bash %}
+(gdb) b BS_debug
+Breakpoint 1 at 0x108: file arch/arm/boot/compressed/head.S, line 427.
+(gdb) c
+Continuing.
+
+Breakpoint 1, BS_debug () at arch/arm/boot/compressed/head.S:427
+427			add	r10, r10, #16384
+(gdb) info reg
+r0             0x0                 0
+r1             0x24c               588
+r2             0x42b9b8            4372920
+r3             0x42b9d0            4372944
+r4             0x8001              32769
+r5             0x0                 0
+r6             0x42b9b8            4372920
+r7             0x0                 0
+r8             0x0                 0
+r9             0xb611d8            11932120
+r10            0x43c9d0            4442576
+(gdb) n
+428			cmp	r4, r10
+(gdb) info reg
+r0             0x0                 0
+r1             0x24c               588
+r2             0x42b9b8            4372920
+r3             0x42b9d0            4372944
+r4             0x8001              32769
+r5             0x0                 0
+r6             0x42b9b8            4372920
+r7             0x0                 0
+r8             0x0                 0
+r9             0xb611d8            11932120
+r10            0x4409d0            4458960
+(gdb) n
+429			bhs	wont_overwrite
+(gdb) info reg
+r0             0x0                 0
+r1             0x24c               588
+r2             0x42b9b8            4372920
+r3             0x42b9d0            4372944
+r4             0x8001              32769
+r5             0x0                 0
+r6             0x42b9b8            4372920
+r7             0x0                 0
+r8             0x0                 0
+r9             0xb611d8            11932120
+r10            0x4409d0            4458960
+(gdb) n
+430			add	r10, r4, r9
+(gdb) n
+431			adr	r9, wont_overwrite
+(gdb) n
+432			cmp	r10, r9
+(gdb) n
+433			bls	wont_overwrite
+(gdb) n
+447			add	r10, r10, #((reloc_code_end - restart + 256) & ~255)
+(gdb)                     16K
+{% endhighlight %}
+
+因此从实践结果看出，zImage 与解压之后的内核存在重叠，zImage 需要重定位，它们
+之间的关系如下：
+
+{% highlight bash %}
+0           zImage + BSS + Stack + Malloc         16k
+| <-------------------------------------------> | <---> |
++---------+-------------------------------------+-------+-----+--------+
+|         |                                     |       |     |        |
+|         |                                     |       |     |        |
+|         |                                     |       |     |        |
++---------+-------------------------------------+-------+-----+--------+
+          | <-----------------------------------------------> |
+          r4          decompressed kernel (Image)
+{% endhighlight %}
+
+经过上面代码执行，r9 寄存器存储着 wont_overwrite 的地址, r10 寄存器存储着解压之后
+内核的终止地址。接下来运行代码：
+
+{% highlight bash %}
+/*
+ * Relocate ourselves past the end of the decompressed kernel.
+ *   r6  = _edata
+ *   r10 = end of the decompressed kernel
+ * Because we always copy ahead, we need to do it from the end and go
+ * backward in case the source and destination overlap.
+ */
+                /*
+                 * Bump to the next 256-byte boundary with the size of
+                 * the relocation code added. This avoids overwriting
+                 * ourself when the offset is small.
+                 */
+                add     r10, r10, #((reloc_code_end - restart + 256) & ~255)
+                bic     r10, r10, #255
+
+                /* Get start of code we want to copy and align it down. */
+                adr     r5, restart
+                bic     r5, r5, #31
+{% endhighlight %}
+
+此时 r10 寄存器存储着解压之后内核的终止地址。"((reloc_code_end - restart + 256) & ~255)"
+表示了 head.S 中 reloc_code_end 的长度，并按 256 字节对齐，运行命令之后，r10 寄存器
+存储了解压之后内核的终止地址再加上 head.s 重定位代码的长度。并将 head.S 中 restart
+的地址存储在 r5 寄存器中，并按 32 字节对齐。接下来执行代码：
+
+{% highlight bash %}
+                sub     r9, r6, r5              @ size to copy
+                add     r9, r9, #31             @ rounded up to a multiple
+                bic     r9, r9, #31             @ ... of 32 bytes
+                add     r6, r9, r5
+                add     r9, r9, r10
+{% endhighlight %}
+
+此处，r6 寄存器表示 zImage 不带 BSS 段的长度，即原始 zImage 的长度。这里调用命令
+"sub r9, r6, r5"，将 zImage 的长度减去需要 head.S 中需要重定位的长度之后的值，
+存储到 r9 寄存器中，并将 r9 寄存器按 32 字节对齐。接着将 r9 寄存器的值存储到 r6
+寄存器中，这样 r6 寄存器存储着 zImage 减去 head.S 中重定位长度之后的终止地址。接着执行命令
+"add r9, r9, r10", 通过这个命令，r9 存储了 zImage 重定位之后的结束物理地址，
+他们之间关系如下图：
+
+{% highlight bash %}
+0         zImage                     Relocated zImage     r9
+| <-------------------> |       | <---------------------> |
++-------+---------------+-------+-------------------------+--------+
+|       |               |       |                         |        |
+|       |               |       |                         |        |
+|       |               |       |                         |        |
++-------+---------------+-------+-------------------------+--------+
+        | <-------------------> |
+         depressed kernel (Image)
+{% endhighlight %}
+
+接下来执行代码：
+
+{% highlight bash %}
+1:              ldmdb   r6!, {r0 - r3, r10 - r12, lr}
+                cmp     r6, r5
+                stmdb   r9!, {r0 - r3, r10 - r12, lr}
+                bhi     1b
+
+                /* Preserve offset to relocated code. */
+                sub     r6, r9, r6
+{% endhighlight %}
+
+这段代码的主要任务就是搬运 zImage 到重定位的位置，搬运的内容不包括 zImage 的 BSS/
+Stack/Malloc 区域。此时 r6 寄存器存储着 zImage 的减去 head.S 重定位段之后的结束地址。
+r9 寄存器存储着解压之后的内核终止地址加上 zImage 重定位的地址。此时内存布局如下：
+
+{% highlight bash %}
+
+0    zImage                                  Relocated zImage
+| <----------> |                             | <---------> |
++--------------+----+------------------------+-------------+---+
+|              |    |                        |             |   |
+|              |    |                        |             |   |
+|              |    |                        |             |   |
++--------------+----+------------------------+-------------+---+
+               r6   | <--------------------> |             r9
+                    decompressed kernel (Image)
+{% endhighlight %}
+
+这里使用 ldmdb 从 r6 对应的 zImage 的末尾往重定位 zImage 的末尾拷贝数据，这里
+也就是搬运 zImage 到新的地址。ldmdb 一直循环知道 r6 的地址与 r5 对应的地址重合，
+方才停止循环。

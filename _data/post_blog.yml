@@ -1,0 +1,19 @@
+tabs:
+     - id: thr
+       title: VFS
+
+     - id: fou
+       title: MMU
+
+     - id: fiv
+       title: IO
+
+     - id: six
+       title: HAB
+
+     - id: svn
+       title: BIOS
+
+     - id: egt
+       title: HW
+

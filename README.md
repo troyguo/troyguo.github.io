@@ -1,21 +1,5 @@
-# troyguo's blog  
-Mail: hit_troy@126.com
+# Blog of BiscuitOS
 
-I will cover the following topics:
-*******
-## ASIC Design & Verification
-* Systemverilog, UVM  
-* Emulation  
-* Formal Verification
-* ESL
-* HW/SW co-verifiction
-*******
-## Linux Kernel & Device Driver
-* Linux kernel
-* Linux Device driver
-*******
-## Others
-* [Qemu](https://www.qemu.org/)
-* [Unicorn](www.unicorn-engine.org/)
-* [Gem5](www.m5sim.org/Main_Page )
-*******
+## License
+
+This theme is open source under MIT License. So feel free to use this Jekyll theme on your site, although linking back to me is more than welcomed.

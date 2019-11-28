@@ -1,0 +1,6 @@
+_site/
+.sass-cache/
+*.swp
+.sass-cache
+.*.swo
+tags
