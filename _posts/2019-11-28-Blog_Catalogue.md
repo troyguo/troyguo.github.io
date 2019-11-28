@@ -13,5 +13,5 @@ tags:
 
 ## <span id="UVM">UVM</span>
 
-> - [New!! UVM PITFALL](https://biscuitos.github.io/blog/uvm-pitfall)
+> - [New!! UVM PITFALL](https://biscuitos.github.io/blog/uvm-pitfalls)
 >
