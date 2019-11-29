@@ -1,4 +1,4 @@
-# Blog of BiscuitOS
+# Blog of Troyguo
 
 ## License
 
