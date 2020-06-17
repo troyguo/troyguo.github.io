@@ -1,10 +1,10 @@
-# Pitfall of UVM
+# <center>Pitfall of UVM</center>
 
 总结些UVM使用过程中遇到的一些坑
 
 
 
-## start() vs uvm_do
+## 1. start() vs `uvm_do
 
 start() task的声明：
 
@@ -33,9 +33,3 @@ start() task的声明：
 ```
 
 注意，**call_pre_post**这个参数，在start()默认为1，而uvm_do宏里默认为0. 所以二者最大的差别就在于调用uvm_do启动sequence的时候，不会调用sequence的pre_body和post_body；如果想在pre_body()和post_body()里做些操作的话，请用start(). 否则会踩坑。。。。
-
-Notice the default parameter of **call_pre_post**, the default value of start() is 1, while the default 
-
-
-
-## 
