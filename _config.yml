@@ -1,6 +1,6 @@
 #Site
-title: Troyguo Verification
-description: The Blog for Troyguo Verification
+title: GeekDV
+description: The Blog of GreeDV
 logo: favicon.png
 url: troyguo.me
 rss_url: /feed.xml
@@ -33,7 +33,7 @@ baidu_analytics: 5b31ffbbdc6cff18727f3adf75a03777    #from //hm.baidu.com/hm.js?
 # Author information:
 author:
   #resume: /resume
-  name: Troyguo Verification     #the name of Blog section
+  name: GeekDV     #the name of Blog section
   about_me:  UVM, Formal Verification, Palladium
 
 # Social Links

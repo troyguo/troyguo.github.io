@@ -1,6 +1,6 @@
 ---
 layout: post-list
-title:  BiscuitOS
+title:  GeekDV
 description: "List of posts"
 permalink: /blog/
 comment: true
