@@ -83,6 +83,8 @@ typora-root-url: ..\..
 
 ![图11 bdd_curcuit](/images/formal/basic_algo/11_bdd_curcuit.PNG)
 
+
+
 ![图12 combined_bdd](/images/formal/basic_algo/12_bdd_curcuit.PNG)
 
 
@@ -120,7 +122,7 @@ requirement = !a&&!c || b&c
 !(!a&&c || a&&!b) -> !a&&!c || b&c
 ```
 
-p -> q 等价于 !p || q  
+p -> q 等价于 !p \|\| q  
 
 ```
 (!a&&c || a&&!b) || (!a&&!c || b&&c)
