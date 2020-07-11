@@ -75,7 +75,11 @@ typora-root-url: ..\..
 
 ![图10 bdd_basic_gates](/images/formal/basic_algo/10_bdd_simple_gates.PNG)
 
+
+
 例如，我们以 (x&&y)||z 为例，电路如图11所示。将这些基本门电路组合在一起，就是这个电路的BDD，参见图12.
+
+
 
 ![图11 (../../images/formal/basic_algo/11_bdd_curcuit.PNG) || x](/images/formal/basic_algo/11_bdd_curcuit.PNG)
 
