@@ -81,7 +81,7 @@ typora-root-url: ..\..
 
 
 
-![图11 (../../images/formal/basic_algo/11_bdd_curcuit.PNG) || x](/images/formal/basic_algo/11_bdd_curcuit.PNG)
+![图11 bdd_curcuit](/images/formal/basic_algo/11_bdd_curcuit.PNG)
 
 ![图12 combined_bdd](/images/formal/basic_algo/12_bdd_curcuit.PNG)
 
