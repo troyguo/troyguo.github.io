@@ -13,11 +13,12 @@ tags:
 
 ## <span id="UVM">UVM</span>
 
-> - [UVM PITFALL](https://troyguo.github.io/blog/uvm-pitfalls)
+> - [UVM PITFALL](../uvm-pitfalls)
 
 ## <span id="UVM">Formal</span>
 
-> - [Formal Verification Overview](https://troyguo.github.io/blog/formal-overview)
+> - [Formal Verification Overview](../formal-overview)
+> - [Formal  Basic Algorithm](../basic-algorithm)
 
 
 

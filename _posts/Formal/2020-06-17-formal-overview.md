@@ -1,3 +1,9 @@
+---
+typora-root-url: ..\..
+
+
+---
+
 # <center>Formal Verificaiton Overview</center>
 
 ## 前言
