@@ -18,7 +18,9 @@ tags:
 ## <span id="UVM">Formal</span>
 
 > - [Formal Verification Overview](../formal-overview)
-> - [Formal  Basic Algorithm](../basic-algorithm)
+> - [Formal  Basic Algorithm](../formal-basic-algorithm)
+> - [Formal SVA](../formal-sva)
+> - 
 
 
 
